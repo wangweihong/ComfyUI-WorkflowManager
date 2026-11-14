@@ -12,7 +12,7 @@ export async function showMoveDialog({ paths, initialPath, browse, move }) {
             <button type="button" class="move-parent">上一级</button>
         </div>
         <p class="move-location" style="overflow-wrap:anywhere"></p>
-        <div class="move-folders" role="group" aria-label="目标目录中的子文件夹" style="max-height:38vh;overflow:auto;display:flex;flex-direction:column;gap:6px;padding:8px 0"></div>
+        <div class="move-folders" role="group" aria-label="目标目录中的子文件夹" style="max-height:38vh;min-height:0;overflow-y:auto;overflow-x:hidden;display:flex;flex-direction:column;gap:6px;padding:8px 0"></div>
         <p class="move-feedback" role="status" style="white-space:pre-wrap;overflow-wrap:anywhere"></p>
         <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:12px">
             <button type="button" class="move-cancel">取消</button>
@@ -60,8 +60,18 @@ export async function showMoveDialog({ paths, initialPath, browse, move }) {
                 const button = document.createElement('button');
                 button.type = 'button';
                 button.dataset.targetPath = item.path;
-                button.textContent = `📁 ${item.name}`;
-                button.style.cssText = buttonStyle + ';text-align:left;overflow:hidden;text-overflow:ellipsis';
+                // Rows must not shrink to fit the scroll container: many folders
+                // otherwise collapse the content box beneath the button padding.
+                button.style.cssText = buttonStyle + ';display:flex;align-items:flex-start;gap:8px;flex:0 0 auto;box-sizing:border-box;width:100%;min-width:0;min-height:40px;height:auto;text-align:left;white-space:normal;line-height:1.5';
+                const icon = document.createElement('span');
+                icon.textContent = '📁';
+                icon.setAttribute('aria-hidden', 'true');
+                icon.style.cssText = 'flex:0 0 auto;line-height:inherit';
+                const name = document.createElement('span');
+                name.textContent = item.name;
+                name.style.cssText = 'flex:1 1 auto;min-width:0;white-space:normal;overflow-wrap:anywhere;line-height:inherit';
+                button.append(icon, name);
+                button.title = item.name;
                 button.disabled = forbidden(item.path);
                 if (button.disabled) button.title = '不能移动到自身或其子目录';
                 button.onclick = () => navigate(item.path);
