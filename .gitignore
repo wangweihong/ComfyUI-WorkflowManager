@@ -1,0 +1,5 @@
+__pycache__/
+*.pyc
+.workflow_manager_config.json
+.workflow_manager_config.tmp
+node_modules/

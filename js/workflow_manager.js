@@ -55,7 +55,7 @@ function createWorkflowManagerTab() {
                 
                 // 设置当前容器样式
                 el.style.height = '100%';
-                el.style.minHeight = '100vh';
+                el.style.minHeight = '0';
                 el.style.display = 'flex';
                 el.style.flexDirection = 'column';
                 

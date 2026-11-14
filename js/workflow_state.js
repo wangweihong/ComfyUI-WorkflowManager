@@ -6,6 +6,8 @@ const PLUGIN_NAME = "WorkflowManager";
 // 管理器状态
 const managerState = {
     currentPath: '',
+    fileMode: 'json',
+    searchTerm: '',
     selectedItems: new Set(),
     clipboardItem: null,
     clipboardOperation: 'cut', // 'cut' or 'copy'
@@ -50,13 +52,16 @@ function formatDate(timestamp) {
 function sortItems(items) {
     return items.sort((a, b) => {
         // 文件夹优先
-        if (a.type !== b.type) {
+        if ((a.type === 'directory') !== (b.type === 'directory')) {
             return a.type === 'directory' ? -1 : 1;
         }
         
         let comparison = 0;
         
         switch (managerState.sortBy) {
+            case 'type':
+                comparison = (a.extension || '').localeCompare(b.extension || '') || a.name.localeCompare(b.name);
+                break;
             case 'name':
                 comparison = a.name.localeCompare(b.name);
                 break;
@@ -75,14 +80,36 @@ function sortItems(items) {
 }
 
 // 过滤项目
-function filterItems(searchTerm) {
-    const fileItems = document.querySelectorAll('.file-item');
-    
-    fileItems.forEach(item => {
-        const name = item.dataset.name.toLowerCase();
-        const matches = name.includes(searchTerm.toLowerCase());
-        item.style.display = matches ? 'flex' : 'none';
-    });
+function filterItems(searchTerm = managerState.searchTerm) {
+    managerState.searchTerm = searchTerm;
+    const items = [...document.querySelectorAll('#fileGrid .file-item')];
+    const matches = new Set(items.filter(item =>
+        item.dataset.name.toLowerCase().includes(searchTerm.toLowerCase())));
+    // Keep the parent rows visible when an expanded descendant matches.
+    for (const item of [...matches]) {
+        let parent = item.dataset.parentPath;
+        while (parent) {
+            const row = items.find(candidate => candidate.dataset.path === parent);
+            if (!row) break;
+            matches.add(row);
+            parent = row.dataset.parentPath;
+        }
+    }
+    for (const item of items) {
+        const visible = matches.has(item);
+        item.hidden = !visible;
+        item.style.display = visible ? '' : 'none';
+        if (!visible) {
+            managerState.selectedItems.delete(item.dataset.path);
+            item.classList.remove('selected');
+        }
+    }
+    const empty = document.querySelector('#emptyState');
+    if (empty) {
+        empty.style.display = matches.size ? 'none' : 'flex';
+        empty.querySelector('p').textContent = searchTerm ? '没有匹配的文件' : '此模式下没有文件';
+    }
+    updateStatusBar(matches.size);
 }
 
 // 选择管理
@@ -98,7 +125,7 @@ function clearSelection() {
 function addSelection(path) {
     managerState.selectedItems.add(path);
     managerState.lastSelectedItem = path;
-    const item = document.querySelector(`[data-path="${path}"]`);
+    const item = document.querySelector(`[data-path="${CSS.escape(path)}"]`);
     if (item) item.classList.add('selected');
     updateStatusBar(document.querySelectorAll('.file-item').length);
 }
@@ -106,7 +133,7 @@ function addSelection(path) {
 function toggleSelection(path) {
     if (managerState.selectedItems.has(path)) {
         managerState.selectedItems.delete(path);
-        const item = document.querySelector(`[data-path="${path}"]`);
+        const item = document.querySelector(`[data-path="${CSS.escape(path)}"]`);
         if (item) item.classList.remove('selected');
         // 如果取消选择的是最后选择的项，清除lastSelectedItem
         if (managerState.lastSelectedItem === path) {
@@ -180,7 +207,7 @@ function handleItemSelection(path, event) {
 }
 
 function selectAll() {
-    const fileItems = document.querySelectorAll('.file-item');
+    const fileItems = document.querySelectorAll('.file-item:not([hidden])');
     
     clearSelection();
     
@@ -192,13 +219,17 @@ function selectAll() {
     showToast(`已选择 ${fileItems.length} 项`);
 }
 
+function escapeHtml(value) {
+    return String(value).replace(/[&<>"']/g, c => ({'&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;'}[c]));
+}
+
 // UI更新函数
 function updateStatusBar(itemCount) {
     const itemCountEl = document.querySelector('#itemCount');
     const selectedCountEl = document.querySelector('#selectedCount');
     
     if (itemCountEl) {
-        itemCountEl.textContent = `${itemCount} 项目`;
+        itemCountEl.textContent = `${document.querySelectorAll('#fileGrid .file-item:not([hidden])').length} 项`;
     }
     
     if (selectedCountEl) {
@@ -219,7 +250,7 @@ function updateBreadcrumb(path) {
     parts.forEach((part, index) => {
         currentPath += (currentPath ? '/' : '') + part;
         breadcrumbHTML += '<span class="breadcrumb-separator">/</span>';
-        breadcrumbHTML += `<span class="breadcrumb-item" data-path="${currentPath}">${part}</span>`;
+        breadcrumbHTML += `<span class="breadcrumb-item" data-path="${escapeHtml(currentPath)}">${escapeHtml(part)}</span>`;
     });
     
     breadcrumb.innerHTML = breadcrumbHTML;
@@ -458,6 +489,7 @@ async function testPreviewAPI(path) {
 
 // 导出所有函数和状态
 export {
+    escapeHtml,
     PLUGIN_NAME,
     managerState,
     isLoading,

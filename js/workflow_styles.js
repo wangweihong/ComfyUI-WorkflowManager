@@ -127,8 +127,7 @@ function addManagerStyles() {
             position: relative;
             overflow: auto;
             background: var(--comfy-input-bg, #2d2d2d);
-            height: 100%;
-            min-height: 100%;
+            min-height: 0;
         }
         
         .loading-overlay {

@@ -2,7 +2,9 @@
 // 文件操作和拖拽功能
 
 import { api } from "../../../scripts/api.js";
+import { app } from "../../../scripts/app.js";
 import { 
+    escapeHtml,
     PLUGIN_NAME, 
     managerState, 
     formatDate, 
@@ -14,6 +16,7 @@ import {
 } from './workflow_state.js';
 
 import { createDragImage, isSubDirectory } from './workflow_styles.js';
+import { showMoveDialog } from './move_dialog.js';
 
 // API调用函数 (基础部分，重复使用)
 const WorkflowAPI = {
@@ -39,7 +42,7 @@ const WorkflowAPI = {
                 body: JSON.stringify({ 
                     old_path: oldPath, 
                     new_name: newName,
-                    sync_preview: syncPreview && oldPath.toLowerCase().endsWith('.json')
+                    sync_preview: syncPreview && managerState.fileMode === 'json' && oldPath.toLowerCase().endsWith('.json')
                 })
             });
             return await response.json();
@@ -56,7 +59,7 @@ const WorkflowAPI = {
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ 
                     path,
-                    sync_preview: syncPreview && path.toLowerCase().endsWith('.json')
+                    sync_preview: syncPreview && managerState.fileMode === 'json' && path.toLowerCase().endsWith('.json')
                 })
             });
             return await response.json();
@@ -74,7 +77,7 @@ const WorkflowAPI = {
                 body: JSON.stringify({ 
                     source_path: sourcePath, 
                     target_dir: targetDir,
-                    sync_preview: syncPreview && sourcePath.toLowerCase().endsWith('.json')
+                    sync_preview: syncPreview && managerState.fileMode === 'json' && sourcePath.toLowerCase().endsWith('.json')
                 })
             });
             return await response.json();
@@ -92,7 +95,7 @@ const WorkflowAPI = {
                 body: JSON.stringify({ 
                     source_path: sourcePath, 
                     target_dir: targetDir,
-                    sync_preview: syncPreview && sourcePath.toLowerCase().endsWith('.json')
+                    sync_preview: syncPreview && managerState.fileMode === 'json' && sourcePath.toLowerCase().endsWith('.json')
                 })
             });
             return await response.json();
@@ -104,7 +107,7 @@ const WorkflowAPI = {
 
     async browse(path = '') {
         try {
-            const response = await api.fetchApi(`/workflow-manager/browse?path=${encodeURIComponent(path)}`);
+            const response = await api.fetchApi(`/workflow-manager/browse?path=${encodeURIComponent(path)}&mode=${managerState.fileMode}`);
             return await response.json();
         } catch (error) {
             console.error('Failed to browse:', error);
@@ -135,8 +138,12 @@ async function createFolder(name) {
     }
 }
 
-function showCreateFolderDialog() {
-    const name = prompt('请输入文件夹名称:');
+async function showCreateFolderDialog() {
+    const name = await app.extensionManager.dialog.prompt({
+        title: '新建文件夹',
+        message: '请输入文件夹名称:',
+        defaultValue: ''
+    });
     if (name && name.trim()) {
         createFolder(name.trim());
     }
@@ -167,25 +174,29 @@ async function renameItem(path, newName) {
     }
 }
 
-function showRenameDialog(path) {
-    const item = document.querySelector(`[data-path="${path}"]`);
+async function showRenameDialog(path) {
+    const item = document.querySelector(`[data-path="${CSS.escape(path)}"]`);
     const currentName = item?.dataset.name || '';
     
-    const newName = prompt('请输入新名称:', currentName);
+    const newName = await app.extensionManager.dialog.prompt({
+        title: '重命名',
+        message: '请输入新名称:',
+        defaultValue: currentName
+    });
     if (newName && newName.trim() && newName !== currentName) {
         renameItem(path, newName.trim());
     }
 }
 
 async function deleteSelectedItems() {
-    const selectedPaths = Array.from(managerState.selectedItems);
+    const selectedPaths = Array.from(managerState.selectedItems).filter(path => ![...managerState.selectedItems].some(parent => path.startsWith(parent + '/')));
     if (selectedPaths.length === 0) return;
     
     const confirmMsg = selectedPaths.length === 1 
         ? `确定要删除 "${selectedPaths[0]}" 吗？`
         : `确定要删除选中的 ${selectedPaths.length} 项吗？`;
     
-    if (!confirm(confirmMsg)) return;
+    if (!await app.extensionManager.dialog.confirm({ title: '删除文件', message: confirmMsg, type: 'delete' })) return;
     
     let successCount = 0;
     let errorCount = 0;
@@ -224,7 +235,7 @@ async function pasteItems() {
     
     // 如果只选中了一个项目且是文件夹，则粘贴到该文件夹
     if (selectedPaths.length === 1) {
-        const selectedItem = document.querySelector(`[data-path="${selectedPaths[0]}"]`);
+        const selectedItem = document.querySelector(`[data-path="${CSS.escape(selectedPaths[0])}"]`);
         if (selectedItem && selectedItem.dataset.type === 'directory') {
             targetDir = selectedPaths[0];
         }
@@ -239,7 +250,7 @@ async function pasteItems() {
     showLoading(true);
     
     try {
-        for (const sourcePath of managerState.clipboardItem) {
+        for (const sourcePath of managerState.clipboardItem.filter(path => !managerState.clipboardItem.some(parent => path.startsWith(parent + '/')))) {
             let result;
             
             if (operation === 'cut') {
@@ -295,6 +306,49 @@ async function pasteItems() {
     }
 }
 
+// Explicit destination picker; snapshot the selection before browsing folders.
+async function moveItemsTo(paths, targetDir) {
+    const sources = [...new Set(paths)].filter(path => !paths.some(parent => path.startsWith(parent + '/')));
+    const result = { moved: [], skipped: [], failed: [] };
+    for (const path of sources) {
+        const parent = path.includes('/') ? path.slice(0, path.lastIndexOf('/')) : '';
+        if (parent === targetDir) {
+            result.skipped.push(path);
+            continue;
+        }
+        if (targetDir === path || targetDir.startsWith(path + '/')) {
+            result.failed.push({ path, error: '不能移动到自身或其子目录' });
+            continue;
+        }
+        const response = await WorkflowAPI.move(path, targetDir);
+        if (response.success) {
+            result.moved.push(path);
+            for (const expanded of [...managerState.expandedFolders]) {
+                if (expanded === path || expanded.startsWith(path + '/')) managerState.expandedFolders.delete(expanded);
+            }
+        } else {
+            result.failed.push({ path, error: response.error || '移动失败' });
+        }
+    }
+    if (result.moved.length) {
+        managerState.imageCache.clear();
+        if (managerState.clipboardItem) {
+            managerState.clipboardItem = managerState.clipboardItem.filter(path => !result.moved.some(source => path === source || path.startsWith(source + '/')));
+        }
+        await loadDirectoryRef?.(managerState.currentPath);
+    }
+    if (!result.failed.length) {
+        showToast(`已移动 ${result.moved.length} 项到${targetDir || '根目录'}${result.skipped.length ? `，${result.skipped.length} 项已在目标目录` : ''}`, 'success');
+    }
+    return result;
+}
+
+function showMoveToDialog() {
+    const selected = [...managerState.selectedItems];
+    const paths = selected.filter(path => !selected.some(parent => path.startsWith(parent + '/')));
+    return showMoveDialog({ paths, initialPath: managerState.currentPath, browse: WorkflowAPI.browse, move: moveItemsTo });
+}
+
 // 右键菜单操作
 function handleContextAction(action) {
     const selectedPaths = Array.from(managerState.selectedItems);
@@ -302,12 +356,14 @@ function handleContextAction(action) {
     switch (action) {
         case 'open':
             if (selectedPaths.length === 1) {
-                const item = document.querySelector(`[data-path="${selectedPaths[0]}"]`);
+                const item = document.querySelector(`[data-path="${CSS.escape(selectedPaths[0])}"]`);
                 const type = item?.dataset.type;
                 if (type === 'directory') {
                     if (loadDirectoryRef) {
                         loadDirectoryRef(selectedPaths[0]);
                     }
+                } else if (type === 'file') {
+                    window.dispatchEvent(new CustomEvent('workflowManager:previewFile', { detail: { path: selectedPaths[0] } }));
                 } else if (type === 'workflow') {
                     // 使用自定义事件触发工作流加载
                     window.dispatchEvent(new CustomEvent('workflowManager:loadWorkflow', { 
@@ -317,6 +373,10 @@ function handleContextAction(action) {
             }
             break;
             
+        case 'preview':
+            if (selectedPaths.length === 1) window.dispatchEvent(new CustomEvent('workflowManager:previewFile', { detail: { path: selectedPaths[0] } }));
+            break;
+
         case 'refresh-preview':
             if (selectedPaths.length > 0) {
                 const workflowPaths = selectedPaths.filter(path => path.toLowerCase().endsWith('.json'));
@@ -350,6 +410,9 @@ function handleContextAction(action) {
             }
             break;
             
+        case 'move-to':
+            return showMoveToDialog();
+
         case 'cut':
             if (selectedPaths.length > 0) {
                 managerState.clipboardItem = selectedPaths;
@@ -397,7 +460,7 @@ function handleContextAction(action) {
 
 // 属性对话框
 function showPropertiesDialog(path) {
-    const item = document.querySelector(`[data-path="${path}"]`);
+    const item = document.querySelector(`[data-path="${CSS.escape(path)}"]`);
     const name = item?.dataset.name || '';
     const type = item?.dataset.type || '';
     
@@ -413,19 +476,19 @@ function showPropertiesDialog(path) {
             <div class="dialog-content">
                 <div class="property-row">
                     <label>名称:</label>
-                    <span>${name}</span>
+                    <span>${escapeHtml(name)}</span>
                 </div>
                 <div class="property-row">
                     <label>类型:</label>
-                    <span>${type === 'directory' ? '文件夹' : '工作流'}</span>
+                    <span>${type === 'directory' ? '文件夹' : path.toLowerCase().endsWith('.json') ? 'JSON 文件' : '文件'}</span>
                 </div>
                 <div class="property-row">
                     <label>路径:</label>
-                    <span>${path}</span>
+                    <span>${escapeHtml(path)}</span>
                 </div>
                 <div class="property-row">
                     <label>完整路径:</label>
-                    <span>user/default/workflows/${path}</span>
+                    <span>user/default/workflows/${escapeHtml(path)}</span>
                 </div>
             </div>
             <div class="dialog-footer">
@@ -561,7 +624,7 @@ function showPropertiesDialog(path) {
 // 多选属性对话框
 function showMultiplePropertiesDialog(paths) {
     const folderCount = paths.filter(path => {
-        const item = document.querySelector(`[data-path="${path}"]`);
+        const item = document.querySelector(`[data-path="${CSS.escape(path)}"]`);
         return item?.dataset.type === 'directory';
     }).length;
     
@@ -586,7 +649,7 @@ function showMultiplePropertiesDialog(paths) {
                     <span>${folderCount} 个</span>
                 </div>
                 <div class="property-row">
-                    <label>工作流:</label>
+                    <label>文件:</label>
                     <span>${workflowCount} 个</span>
                 </div>
                 <div class="property-row">
@@ -594,14 +657,14 @@ function showMultiplePropertiesDialog(paths) {
                 </div>
                 <div class="properties-list">
                     ${paths.map(path => {
-                        const item = document.querySelector(`[data-path="${path}"]`);
+                        const item = document.querySelector(`[data-path="${CSS.escape(path)}"]`);
                         const name = item?.dataset.name || path;
                         const type = item?.dataset.type || 'workflow';
                         const icon = type === 'directory' ? 'pi-folder' : 'pi-file';
                         return `
                             <div class="properties-list-item">
                                 <i class="pi ${icon}"></i>
-                                <span>${name}</span>
+                                <span>${escapeHtml(name)}</span>
                             </div>
                         `;
                     }).join('')}
@@ -629,13 +692,6 @@ function handleDragStart(e) {
     const path = fileItem.dataset.path;
     const type = fileItem.dataset.type;
     
-    // 检查文件类型，只允许拖拽.json工作流文件
-    if (type === 'workflow' && !path.toLowerCase().endsWith('.json')) {
-        e.preventDefault();
-        showToast(`只能拖拽.json工作流文件`, 'warning');
-        return;
-    }
-    
     // 如果拖拽的项目不在选中列表中，则清除选择并选中当前项目
     if (!managerState.selectedItems.has(path)) {
         clearSelection();
@@ -643,17 +699,7 @@ function handleDragStart(e) {
     }
     
     // 设置拖拽数据
-    draggedItems = Array.from(managerState.selectedItems);
-    
-    // 过滤拖拽项目，只包含.json文件
-    if (type === 'workflow') {
-        draggedItems = draggedItems.filter(itemPath => itemPath.toLowerCase().endsWith('.json'));
-        if (draggedItems.length === 0) {
-            e.preventDefault();
-            showToast(`没有可拖拽的.json工作流文件`, 'warning');
-            return;
-        }
-    }
+    draggedItems = Array.from(managerState.selectedItems).filter(path => ![...managerState.selectedItems].some(parent => path.startsWith(parent + '/')));
     
     // 设置拖拽效果
     e.dataTransfer.effectAllowed = 'all';
@@ -681,7 +727,7 @@ function handleDragStart(e) {
             gap: 8px;
             z-index: 1000;
         `;
-        dragImage.innerHTML = `<i class="pi pi-file" style="color: #28a745;"></i>${fileItem.dataset.name}`;
+        dragImage.innerHTML = `<i class="pi pi-file" style="color: #28a745;"></i>${escapeHtml(fileItem.dataset.name)}`;
         
         document.body.appendChild(dragImage);
         e.dataTransfer.setDragImage(dragImage, 20, 20);
@@ -834,12 +880,10 @@ function handleDrop(e) {
         const targetPath = fileItem.dataset.path;
         const isCopy = e.ctrlKey || e.metaKey;
         
-        const validWorkflowItems = draggedItems.filter(itemPath => 
-            itemPath.toLowerCase().endsWith('.json')
-        );
+        const validWorkflowItems = draggedItems;
         
         if (validWorkflowItems.length === 0) {
-            showToast(`没有可放置的.json工作流文件`, 'warning');
+            showToast(`没有可放置的文件或目录`, 'warning');
             return;
         }
         
@@ -851,9 +895,7 @@ function handleDrop(e) {
         const targetPath = managerState.currentPath;
         const isCopy = e.ctrlKey || e.metaKey;
         
-        const validWorkflowItems = draggedItems.filter(itemPath => 
-            itemPath.toLowerCase().endsWith('.json')
-        );
+        const validWorkflowItems = draggedItems;
         
         if (validWorkflowItems.length > 0) {
             performDropOperation(validWorkflowItems, targetPath, isCopy);
@@ -863,14 +905,12 @@ function handleDrop(e) {
         const targetPath = managerState.currentPath;
         const isCopy = e.ctrlKey || e.metaKey;
         
-        const validWorkflowItems = draggedItems.filter(itemPath => 
-            itemPath.toLowerCase().endsWith('.json')
-        );
+        const validWorkflowItems = draggedItems;
         
         if (validWorkflowItems.length > 0) {
             performDropOperation(validWorkflowItems, targetPath, isCopy);
         } else {
-            showToast(`没有可放置的.json工作流文件`, 'warning');
+            showToast(`没有可放置的文件或目录`, 'warning');
         }
     }
 }
@@ -899,18 +939,8 @@ function handleDragEnd(e) {
 async function performDropOperation(sourcePaths, targetPath, isCopy) {
     if (sourcePaths.length === 0) return;
     
-    // 最终验证：确保所有源路径都是.json文件
-    const validWorkflowPaths = sourcePaths.filter(path => path.toLowerCase().endsWith('.json'));
-    
-    if (validWorkflowPaths.length === 0) {
-        showToast(`没有有效的.json工作流文件可操作`, 'warning');
-        return;
-    }
-    
-    if (validWorkflowPaths.length !== sourcePaths.length) {
-        showToast(`已过滤掉非.json文件，只操作工作流文件`, 'info');
-    }
-    
+    const validWorkflowPaths = sourcePaths;
+
     const operation = isCopy ? 'copy' : 'move';
     const actionText = isCopy ? '复制' : '移动';
     
@@ -952,7 +982,7 @@ async function performDropOperation(sourcePaths, targetPath, isCopy) {
         }
         
         if (successCount > 0) {
-            showToast(`成功${actionText} ${successCount} 个工作流文件${errorCount > 0 ? `，失败 ${errorCount} 个` : ''}`);
+            showToast(`成功${actionText} ${successCount} 项${errorCount > 0 ? `，失败 ${errorCount} 个` : ''}`);
             
             // 刷新主目录（renderFileGrid会自动恢复展开状态）
             if (loadDirectoryRef) {
@@ -1199,7 +1229,7 @@ async function refreshWorkflowPreview(path) {
         }
         
         // 找到对应的文件项
-        const fileItem = document.querySelector(`[data-path="${path}"]`);
+        const fileItem = document.querySelector(`[data-path="${CSS.escape(path)}"]`);
         if (!fileItem) {
             showToast(`找不到文件项: ${path}`, 'error');
             return;
@@ -1365,6 +1395,8 @@ function initializeOperationEventListeners() {
 
 // 导出所有函数
 export {
+    moveItemsTo,
+    showMoveToDialog,
     WorkflowAPI,
     setLoadDirectoryRef,
     createFolder,
@@ -1385,4 +1417,4 @@ export {
     refreshWorkflowPreview,
     initializeOperationEventListeners,
     changeWorkflowPreview
-}; 
+};

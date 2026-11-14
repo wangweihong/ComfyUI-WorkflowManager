@@ -157,3 +157,22 @@ A: 使用Ctrl+Click多选文件，然后通过右键菜单进行批量操作
 
 
 
+
+## 本地增强版：文件浏览和文本预览
+
+- 工具栏可切换 **只显示 JSON / 显示全部**，默认 JSON，自动记住选择；两种模式均保留目录。
+- JSON 按扩展名列出（包括 `.JSON`）。双击时识别画布工作流；配置、API 格式和损坏 JSON 进入只读文本预览。
+- 选中一个或多个工作流，右键 **移动到…**，逐级选择目标文件夹后点击 **移动到此目录**；支持移动回根目录，同名冲突保留原文件并显示失败原因。
+- 全部模式支持其他文件的重命名、剪切、复制、删除及目录间拖放；外部导入仍只接受 JSON。
+- 双击文本或右键“预览”可查看、复制内容。HTML/Markdown 按纯文本显示；UTF-8/BOM 和 GB18030 可预览，最大 1 MiB。二进制文件显示文件信息。
+- 同名目标拒绝覆盖；JSON 模式下自动同步实际工作流的同名封面，全部模式按所选文件逐项操作（需要一起移动时同时选中工作流与封面）。删除操作会永久删除所选文件或目录，操作前会显示确认对话框。
+- 新建目录、改名及删除采用 ComfyUI 自带对话框，兼容内嵌浏览器。
+
+开发验证（Python 环境需有 `aiohttp`，Node.js 需支持 VM modules）：
+
+```sh
+python -m unittest discover -s tests -v
+node --experimental-vm-modules --test tests/file_operations.test.mjs
+```
+
+接口补充：`GET /workflow-manager/browse?path=...&mode=json|all`，省略 `mode` 仍只显示 JSON；`GET /workflow-manager/read-file?path=...` 返回文本预览或文件信息；`POST /workflow-manager/save-view-mode` 同时支持 `fileMode`。工作流读取接口对非画布 JSON 返回 `422` 和 `code: not_workflow`。

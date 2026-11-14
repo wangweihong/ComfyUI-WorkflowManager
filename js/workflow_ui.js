@@ -1,3 +1,4 @@
+import { api } from '../../../scripts/api.js';
 // js/workflow_ui.js
 // UI界面创建和基础事件处理
 
@@ -69,9 +70,16 @@ function createManagerInterface(container) {
                 </div>
             </div>
             
+            <div class="file-mode-bar" style="display:flex;align-items:center;gap:8px;padding:8px 12px;border-bottom:1px solid var(--border-color,#444)">
+                <label for="fileModeSelect">显示</label>
+                <select id="fileModeSelect" aria-label="文件显示模式" style="flex:1;background:var(--comfy-input-bg,#222);color:var(--input-text,#eee);padding:6px;border:1px solid var(--border-color,#555);border-radius:4px">
+                    <option value="json">只显示 JSON</option>
+                    <option value="all">显示全部</option>
+                </select>
+            </div>
             <!-- 搜索栏 -->
             <div class="search-bar">
-                <input type="text" id="searchInput" placeholder="搜索工作流..." class="search-input">
+                <input type="text" id="searchInput" placeholder="搜索文件和文件夹..." class="search-input">
                 <i class="pi pi-search search-icon"></i>
             </div>
             
@@ -89,9 +97,10 @@ function createManagerInterface(container) {
                 <div class="empty-state" id="emptyState" style="display: none;">
                     <i class="pi pi-folder-open"></i>
                     <p>此文件夹为空</p>
-                    <p class="empty-hint">右键点击空白处可以粘贴工作流</p>
+                    <p class="empty-hint">可切换显示模式，或右键新建文件夹、粘贴文件</p>
                 </div>
             </div>
+            <div style="padding:6px 12px;font-size:12px" role="status"><span id="itemCount"></span> <span id="selectedCount"></span></div>
         </div>
         
         <!-- 右键菜单 -->
@@ -99,6 +108,8 @@ function createManagerInterface(container) {
             <div class="menu-item" data-action="open">
                 <i class="pi pi-folder-open"></i> 打开
             </div>
+            <div class="menu-item" data-action="preview"><i class="pi pi-eye"></i> 预览</div>
+            <div class="menu-item" data-action="new-folder"><i class="pi pi-folder-plus"></i> 新建文件夹</div>
             <div class="menu-item" data-action="refresh-preview" style="display: none;">
                 <i class="pi pi-refresh"></i> 刷新预览图
             </div>
@@ -109,6 +120,7 @@ function createManagerInterface(container) {
                 <i class="pi pi-pencil"></i> 重命名
             </div>
             <div class="menu-separator"></div>
+            <div class="menu-item" data-action="move-to"><i class="pi pi-folder-open"></i> 移动到…</div>
             <div class="menu-item" data-action="cut">
                 <i class="pi pi-scissors"></i> 剪切
             </div>
@@ -171,6 +183,29 @@ function bindManagerEvents(container) {
     container.querySelector('#viewToggleBtn').addEventListener('click', toggleView);
     container.querySelector('#sortBtn').addEventListener('click', showSortMenu);
     
+    container.querySelector('#fileModeSelect').addEventListener('change', async event => {
+        const select = event.target;
+        const previousMode = managerState.fileMode;
+        const nextMode = select.value;
+        select.disabled = true;
+        try {
+            const response = await api.fetchApi('/workflow-manager/save-view-mode', {
+                method: 'POST', headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ fileMode: nextMode })
+            });
+            if (!response.ok) throw new Error('无法保存显示模式');
+            managerState.fileMode = nextMode;
+            clearSelection();
+            await loadDirectoryRef?.(managerState.currentPath);
+        } catch (error) {
+            managerState.fileMode = previousMode;
+            select.value = previousMode;
+            showToast(error.message, 'error');
+        } finally {
+            select.disabled = false;
+        }
+    });
+
     // 搜索功能
     const searchInput = container.querySelector('#searchInput');
     let searchTimeout;
@@ -255,70 +290,7 @@ function bindManagerEvents(container) {
         });
     }
 
-    // 空文件夹区域右键菜单事件
-    const emptyState = container.querySelector('#emptyState');
-    if (emptyState) {
-        emptyState.addEventListener('contextmenu', (e) => {
-            e.preventDefault();
-            const contextMenu = document.querySelector('#contextMenu');
-            if (contextMenu) {
-                contextMenu.style.display = 'block';
-                contextMenu.style.left = e.pageX + 'px';
-                contextMenu.style.top = e.pageY + 'px';
-                contextMenu.querySelectorAll('.menu-item').forEach(item => {
-                    item.onclick = () => {
-                        const action = item.dataset.action;
-                        handleContextAction(action);
-                        hideContextMenu();
-                    };
-                });
-            }
-        });
-        
-        // 为空文件夹区域添加拖拽支持
-        emptyState.addEventListener('dragover', (e) => {
-            e.preventDefault();
-            e.stopPropagation(); // 阻止事件冒泡到ComfyUI画布
-            emptyState.classList.add('drop-zone');
-            e.dataTransfer.dropEffect = 'copy';
-        });
-        
-        emptyState.addEventListener('dragleave', (e) => {
-            e.preventDefault();
-            e.stopPropagation(); // 阻止事件冒泡
-            emptyState.classList.remove('drop-zone');
-        });
-        
-        emptyState.addEventListener('drop', (e) => {
-            e.preventDefault();
-            e.stopPropagation(); // 阻止事件冒泡到ComfyUI画布
-            emptyState.classList.remove('drop-zone');
-            
-            // 检查是否是外部文件拖拽
-            const items = e.dataTransfer.items;
-            const files = e.dataTransfer.files;
-            
-            if ((items && items.length > 0) || (files && files.length > 0)) {
-                // 外部文件拖拽 - 使用 handleExternalFileDrop
-                const droppedItems = items && items.length > 0 ? Array.from(items) : Array.from(files);
-                
-                // 动态导入 handleExternalFileDrop 函数
-                import('./workflow_operations.js').then(module => {
-                    module.handleExternalFileDrop(droppedItems, managerState.currentPath);
-                });
-                return;
-            }
-            
-            // 处理内部拖拽的工作流文件
-            const draggedItems = JSON.parse(e.dataTransfer.getData('text/plain') || '[]');
-            if (draggedItems.length > 0) {
-                // 触发粘贴操作
-                window.dispatchEvent(new CustomEvent('workflowManager:contextAction', { 
-                    detail: { action: 'paste' } 
-                }));
-            }
-        });
-    }
+    container.querySelector('#emptyState')?.addEventListener('contextmenu', handleContextMenu);
 }
 
 // 导航返回
@@ -345,6 +317,7 @@ function handleBreadcrumbClick(e) {
 
 // 键盘事件处理
 function handleKeydown(e) {
+    if (document.querySelector('dialog[open]') || e.target.closest('input, textarea, select, [contenteditable=true]')) return;
     // 检查焦点状态并处理键盘事件
     const workflowManager = document.querySelector('.workflow-manager');
     
@@ -376,7 +349,7 @@ function handleKeydown(e) {
         // Enter 打开
         e.preventDefault();
         const path = Array.from(managerState.selectedItems)[0];
-        const item = document.querySelector(`[data-path="${path}"]`);
+        const item = document.querySelector(`[data-path="${CSS.escape(path)}"]`);
         const type = item?.dataset.type;
         
         if (type === 'directory') {
@@ -385,6 +358,8 @@ function handleKeydown(e) {
             }
         } else if (type === 'workflow') {
             window.dispatchEvent(new CustomEvent('workflowManager:loadWorkflow', { detail: { path } }));
+        } else if (type === 'file') {
+            window.dispatchEvent(new CustomEvent('workflowManager:previewFile', { detail: { path } }));
         }
     } else if (e.key === 'Backspace') {
         // Backspace 返回上级 (但不干扰搜索输入框)
@@ -491,137 +466,57 @@ function handleFileGridDoubleClick(e) {
         } else {
             showToast('只能双击.json文件来加载工作流', 'warning');
         }
+    } else if (type === 'file') {
+        window.dispatchEvent(new CustomEvent('workflowManager:previewFile', { detail: { path } }));
     }
 }
 
 // 右键菜单处理
 function handleContextMenu(e) {
     e.preventDefault();
-    
-    const fileItem = e.target.closest('.file-item');
-    const emptyState = e.target.closest('#emptyState');
-    const contextMenu = document.querySelector('#contextMenu');
-    const fileGrid = document.querySelector('#fileGrid'); // 获取文件网格元素
-    
-    if (fileItem) {
-        const path = fileItem.dataset.path;
-        const type = fileItem.dataset.type;
-        
-        if (!managerState.selectedItems.has(path)) {
-            clearSelection();
-            addSelection(path);
-        }
-        
-        // 根据文件类型调整右键菜单
-        const openMenuItem = contextMenu.querySelector('[data-action="open"]');
-        const refreshPreviewMenuItem = contextMenu.querySelector('[data-action="refresh-preview"]');
-        const changePreviewMenuItem = contextMenu.querySelector('[data-action="change-preview"]');
-        
-        if (openMenuItem) {
-            if (type === 'directory') {
-                openMenuItem.innerHTML = '<i class="pi pi-folder-open"></i> 打开';
-                openMenuItem.style.display = 'block';
-            } else if (type === 'workflow' && path.toLowerCase().endsWith('.json')) {
-                openMenuItem.innerHTML = '<i class="pi pi-folder-open"></i> 打开';
-                openMenuItem.style.display = 'block';
-            } else {
-                // 非.json文件不显示"打开"选项
-                openMenuItem.style.display = 'none';
-            }
-        }
-        
-        // 刷新预览图选项 - 只对工作流文件且在网格视图下显示
-        if (refreshPreviewMenuItem) {
-            if (type === 'workflow' && path.toLowerCase().endsWith('.json') && !fileGrid.classList.contains('list-view')) {
-                refreshPreviewMenuItem.style.display = 'block';
-            } else {
-                refreshPreviewMenuItem.style.display = 'none';
-            }
-        }
-        
-        // 更换预览图选项 - 只对工作流文件且在网格视图下显示
-        if (changePreviewMenuItem) {
-            if (type === 'workflow' && path.toLowerCase().endsWith('.json') && !fileGrid.classList.contains('list-view')) {
-                changePreviewMenuItem.style.display = 'block';
-            } else {
-                changePreviewMenuItem.style.display = 'none';
-            }
-        }
-        
-        // 显示所有菜单项
-        contextMenu.querySelectorAll('.menu-item').forEach(item => {
-            item.style.display = 'block';
-        });
-        
-    } else if (emptyState) {
-        // 空文件夹区域右键菜单
+    e.stopPropagation();
+    const row = e.target.closest('.file-item');
+    const menu = document.querySelector('#contextMenu');
+    const path = row?.dataset.path;
+    const type = row?.dataset.type;
+    if (row && !managerState.selectedItems.has(path)) {
         clearSelection();
-        
-        // 只显示相关选项
-        const openMenuItem = contextMenu.querySelector('[data-action="open"]');
-        const refreshPreviewMenuItem = contextMenu.querySelector('[data-action="refresh-preview"]');
-        const changePreviewMenuItem = contextMenu.querySelector('[data-action="change-preview"]');
-        const renameMenuItem = contextMenu.querySelector('[data-action="rename"]');
-        const cutMenuItem = contextMenu.querySelector('[data-action="cut"]');
-        const copyMenuItem = contextMenu.querySelector('[data-action="copy"]');
-        const deleteMenuItem = contextMenu.querySelector('[data-action="delete"]');
-        const propertiesMenuItem = contextMenu.querySelector('[data-action="properties"]');
-        
-        // 隐藏不相关的选项
-        if (openMenuItem) openMenuItem.style.display = 'none';
-        if (refreshPreviewMenuItem) refreshPreviewMenuItem.style.display = 'none';
-        if (changePreviewMenuItem) refreshPreviewMenuItem.style.display = 'none';
-        if (renameMenuItem) renameMenuItem.style.display = 'none';
-        if (cutMenuItem) cutMenuItem.style.display = 'none';
-        if (copyMenuItem) copyMenuItem.style.display = 'none';
-        if (deleteMenuItem) deleteMenuItem.style.display = 'none';
-        if (propertiesMenuItem) propertiesMenuItem.style.display = 'none';
-        
-        // 只显示粘贴选项
-        const pasteMenuItem = contextMenu.querySelector('[data-action="paste"]');
-        if (pasteMenuItem) {
-            pasteMenuItem.style.display = 'block';
-            pasteMenuItem.innerHTML = '<i class="pi pi-clipboard"></i> 粘贴工作流';
-        }
-        
-        // 添加新建文件夹选项
-        const newFolderMenuItem = contextMenu.querySelector('[data-action="new-folder"]');
-        if (!newFolderMenuItem) {
-            const separator = document.createElement('div');
-            separator.className = 'menu-separator';
-            contextMenu.insertBefore(separator, contextMenu.firstChild);
-            
-            const newFolderItem = document.createElement('div');
-            newFolderItem.className = 'menu-item';
-            newFolderItem.dataset.action = 'new-folder';
-            newFolderItem.innerHTML = '<i class="pi pi-folder-plus"></i> 新建文件夹';
-            contextMenu.insertBefore(newFolderItem, separator.nextSibling);
-        }
-        
-    } else {
-        // 其他区域，隐藏所有菜单项
-        contextMenu.querySelectorAll('.menu-item').forEach(item => {
-            item.style.display = 'none';
-        });
-        return;
+        addSelection(path);
+    } else if (!row) {
+        clearSelection();
     }
-    
-    // 智能定位右键菜单，确保完全可见
-    const menuPosition = calculateMenuPosition(e.pageX, e.pageY, contextMenu);
-    
-    // 显示右键菜单
-    contextMenu.style.display = 'block';
-    contextMenu.style.left = menuPosition.x + 'px';
-    contextMenu.style.top = menuPosition.y + 'px';
-    
-    // 绑定菜单项事件
-    contextMenu.querySelectorAll('.menu-item').forEach(item => {
+    const single = managerState.selectedItems.size === 1;
+    const allowed = new Set(row ? ['move-to', 'cut', 'copy', 'delete', 'properties', 'paste'] : ['paste', 'new-folder']);
+    if (single && row) {
+        allowed.add('rename');
+        allowed.add(type === 'directory' || type === 'workflow' ? 'open' : 'preview');
+        if (type === 'workflow') allowed.add('preview');
+    }
+    menu.dataset.contextPath = path ?? '';
+    menu.querySelectorAll('.menu-item').forEach(item => {
+        item.style.display = allowed.has(item.dataset.action) ? 'block' : 'none';
         item.onclick = () => {
-            const action = item.dataset.action;
-            handleContextAction(action);
+            handleContextAction(item.dataset.action);
             hideContextMenu();
         };
     });
+    menu.style.display = 'block';
+    const position = calculateMenuPosition(e.clientX, e.clientY, menu);
+    menu.style.left = position.x + 'px';
+    menu.style.top = position.y + 'px';
+    // Extension alone is insufficient for cover actions; validate only on demand.
+    if (single && type === 'workflow' && !document.querySelector('#fileGrid').classList.contains('list-view')) {
+        api.fetchApi(`/workflow-manager/read-workflow?path=${encodeURIComponent(path)}`)
+            .then(response => response.json()).then(result => {
+                if (!result.success || menu.dataset.contextPath !== path || menu.style.display === 'none') return;
+                for (const action of ['refresh-preview', 'change-preview']) {
+                    menu.querySelector(`[data-action="${CSS.escape(action)}"]`).style.display = 'block';
+                }
+                const pos = calculateMenuPosition(e.clientX, e.clientY, menu);
+                menu.style.left = pos.x + 'px';
+                menu.style.top = pos.y + 'px';
+            }).catch(error => console.warn('无法检查工作流封面操作', error));
+    }
 }
 
 // 智能计算菜单位置，确保菜单完全可见
@@ -774,6 +669,9 @@ function applyViewMode(config) {
     
     if (!fileGrid || !icon) return;
     
+    managerState.fileMode = config.fileMode === 'all' ? 'all' : 'json';
+    const modeSelect = document.querySelector('#fileModeSelect');
+    if (modeSelect) modeSelect.value = managerState.fileMode;
     const viewMode = config.viewMode || 'list';
     
     if (viewMode === 'grid') {
@@ -1115,9 +1013,7 @@ function initializeUIEventListeners() {
     // 注意：workflowManager:contextAction 事件的监听在 workflow_operations.js 中处理
     // 这里不再重复监听，避免操作被执行两次
     
-    window.addEventListener('workflowManager:createFolder', () => {
-        showCreateFolderDialog();
-    });
+
     
     // 监听子项目重新绑定事件
     window.addEventListener('workflowManager:rebindChildItem', (e) => {
